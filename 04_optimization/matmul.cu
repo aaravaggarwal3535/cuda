@@ -4,6 +4,15 @@
 #include <cuda_runtime.h>
 #include <assert.h>
 
+// Macro to check for cuBLAS errors
+#define CHECK_CUBLAS(call) { \
+    cublasStatus_t status = call; \
+    if (status != CUBLAS_STATUS_SUCCESS) { \
+        fprintf(stderr, "cuBLAS error in %s:%d: %d\n", __FILE__, __LINE__, status); \
+        exit(EXIT_FAILURE); \
+    } \
+}
+
 // Initialize matrix with random values
 void init_matrix(float *mat, int rows, int cols) {
     for (int i = 0; i < rows * cols; i++) {
@@ -260,6 +269,95 @@ __global__ void __launch_bounds__((BM * BN) / (TM * TN), 1)
   }
 }
 
+// Shared memory kernel with tiling and block-level caching, but with 2D block tiling and vectorized loads
+template <const int BM, const int BN, const int BK, const int TM, const int TN>
+__global__ void sgemmVectorize(int M, int N, int K, float alpha, float *A,
+                               float *B, float beta, float *C) {
+  const uint cRow = blockIdx.y;
+  const uint cCol = blockIdx.x;
+
+  // BN/TN are the number of threads to span a column
+  const int threadCol = threadIdx.x % (BN / TN);
+  const int threadRow = threadIdx.x / (BN / TN);
+
+  // allocate space for the current blocktile in smem
+  __shared__ float As[BM * BK];
+  __shared__ float Bs[BK * BN];
+
+  // Move blocktile to beginning of A's row and B's column
+  A += cRow * BM * K;
+  B += cCol * BN;
+  C += cRow * BM * N + cCol * BN;
+
+  // calculating the indices that this thread will load into SMEM
+  // we'll load 128bit / 32bit = 4 elements per thread at each step
+  const uint innerRowA = threadIdx.x / (BK / 4);
+  const uint innerColA = threadIdx.x % (BK / 4);
+  const uint innerRowB = threadIdx.x / (BN / 4);
+  const uint innerColB = threadIdx.x % (BN / 4);
+
+  // allocate thread-local cache for results in registerfile
+  float threadResults[TM * TN] = {0.0};
+  float regM[TM] = {0.0};
+  float regN[TN] = {0.0};
+
+  // outer-most loop over block tiles
+  for (uint bkIdx = 0; bkIdx < K; bkIdx += BK) {
+    // populate the SMEM caches
+    // transpose A while loading it
+    float4 tmp =
+        reinterpret_cast<float4 *>(&A[innerRowA * K + innerColA * 4])[0];
+    As[(innerColA * 4 + 0) * BM + innerRowA] = tmp.x;
+    As[(innerColA * 4 + 1) * BM + innerRowA] = tmp.y;
+    As[(innerColA * 4 + 2) * BM + innerRowA] = tmp.z;
+    As[(innerColA * 4 + 3) * BM + innerRowA] = tmp.w;
+
+    reinterpret_cast<float4 *>(&Bs[innerRowB * BN + innerColB * 4])[0] =
+        reinterpret_cast<float4 *>(&B[innerRowB * N + innerColB * 4])[0];
+    __syncthreads();
+
+    // advance blocktile
+    A += BK;     // move BK columns to right
+    B += BK * N; // move BK rows down
+
+    // calculate per-thread results
+    for (uint dotIdx = 0; dotIdx < BK; ++dotIdx) {
+      // block into registers
+      for (uint i = 0; i < TM; ++i) {
+        regM[i] = As[dotIdx * BM + threadRow * TM + i];
+      }
+      for (uint i = 0; i < TN; ++i) {
+        regN[i] = Bs[dotIdx * BN + threadCol * TN + i];
+      }
+      for (uint resIdxM = 0; resIdxM < TM; ++resIdxM) {
+        for (uint resIdxN = 0; resIdxN < TN; ++resIdxN) {
+          threadResults[resIdxM * TN + resIdxN] +=
+              regM[resIdxM] * regN[resIdxN];
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  // write out the results
+  for (uint resIdxM = 0; resIdxM < TM; resIdxM += 1) {
+    for (uint resIdxN = 0; resIdxN < TN; resIdxN += 4) {
+      // load C vector into registers
+      float4 tmp = reinterpret_cast<float4 *>(
+          &C[(threadRow * TM + resIdxM) * N + threadCol * TN + resIdxN])[0];
+      // perform GEMM update in reg
+      tmp.x = alpha * threadResults[resIdxM * TN + resIdxN] + beta * tmp.x;
+      tmp.y = alpha * threadResults[resIdxM * TN + resIdxN + 1] + beta * tmp.y;
+      tmp.z = alpha * threadResults[resIdxM * TN + resIdxN + 2] + beta * tmp.z;
+      tmp.w = alpha * threadResults[resIdxM * TN + resIdxN + 3] + beta * tmp.w;
+      // write back
+      reinterpret_cast<float4 *>(
+          &C[(threadRow * TM + resIdxM) * N + threadCol * TN + resIdxN])[0] =
+          tmp;
+    }
+  }
+}
+
 int main(int argc, char **argv) {
     int M = 4096;
     int N = 4096;
@@ -446,6 +544,85 @@ int main(int argc, char **argv) {
     seconds = avg_blocktiling2D_time / 1000.0f;
     giga_ops = (float)total_ops / 1e9f / seconds;
     printf("2D block tiling kernel average time: %f s, GLOPS: %f\n", seconds, giga_ops);
+
+    //2D block tiling kernel with vectorized loads
+    float vectorized_time = 0;
+    if (M >= 128 and N >= 128) {
+      const uint BM = 128;
+      const uint BN = 128;
+      dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
+      dim3 blockDim((BM * BN) / (TM * TN));
+      // warmup runs for 2D block tiling kernel with vectorized loads
+      for (int i = 0; i < 100; ++i) {
+        sgemmVectorize<BM, BN, BK, TM, TN><<<gridDim, blockDim>>>(M, N, K, alpha, d_A, d_B, beta, d_C);
+      }
+      // benchmark kernels for 2D block tiling kernel with vectorized loads
+      for (int i = 0; i < 100; ++i) {
+        cudaEventRecord(start);
+        sgemmVectorize<BM, BN, BK, TM, TN><<<gridDim, blockDim>>>(M, N, K, alpha, d_A, d_B, beta, d_C);
+        cudaDeviceSynchronize();
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float elapsed_time;
+        cudaEventElapsedTime(&elapsed_time, start, stop);
+        vectorized_time += elapsed_time;
+    }
+    }
+    else {
+      // this is a hacky solution to the underlying problem
+      // of not having proper bounds checking in the kernel
+      const uint BM = 64;
+      const uint BN = 64;
+      dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
+      dim3 blockDim((BM * BN) / (TM * TN));
+      // warmup runs for 2D block tiling kernel with vectorized loads
+      for (int i = 0; i < 100; ++i) {
+        sgemmVectorize<BM, BN, BK, TM, TN><<<gridDim, blockDim>>>(M, N, K, alpha, d_A, d_B, beta, d_C);
+      }
+      // benchmark kernels for 2D block tiling kernel with vectorized loads
+      for (int i = 0; i < 100; ++i) {
+        cudaEventRecord(start);
+        sgemmVectorize<BM, BN, BK, TM, TN><<<gridDim, blockDim>>>(M, N, K, alpha, d_A, d_B, beta, d_C);
+        cudaDeviceSynchronize();
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float elapsed_time;
+        cudaEventElapsedTime(&elapsed_time, start, stop);
+        vectorized_time += elapsed_time;
+      }
+      float avg_vectorized_time = vectorized_time / 100.0f;
+      //calculating glops
+      seconds = avg_vectorized_time / 1000.0f;
+      giga_ops = (float)total_ops / 1e9f / seconds;
+    }
+    printf("2D block tiling kernel with vectorized loads average time: %f s, GLOPS: %f\n", seconds, giga_ops);
+    
+    //
+
+    // cublas testing
+    cublasHandle_t handle;
+    CHECK_CUBLAS(cublasCreate(&handle));
+    //warmup runs for cublas kernel
+    for (int i = 0; i < 100; ++i) {
+        CHECK_CUBLAS(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha, d_A, M, d_B, K, &beta, d_C, M));
+    }
+    // benchmark kernels for cublas kernel
+    float cublas_time = 0;
+    for (int i = 0; i < 100; ++i) {
+        cudaEventRecord(start);
+        CHECK_CUBLAS(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, M, N, K, &alpha, d_A, M, d_B, K, &beta, d_C, M));
+        cudaDeviceSynchronize();
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float elapsed_time;
+        cudaEventElapsedTime(&elapsed_time, start, stop);
+        cublas_time += elapsed_time;
+    }
+    float avg_cublas_time = cublas_time / 100.0f;
+    //calculating glops
+    seconds = avg_cublas_time / 1000.0f;
+    giga_ops = (float)total_ops / 1e9f / seconds;
+    printf("cuBLAS kernel average time: %f s, GLOPS: %f\n", seconds, giga_ops);
     
     free(A);
     free(B);
@@ -454,4 +631,5 @@ int main(int argc, char **argv) {
     cudaFree(d_C);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    CHECK_CUBLAS(cublasDestroy(handle));
 }

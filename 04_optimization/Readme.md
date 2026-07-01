@@ -144,4 +144,87 @@ this is a problem by 2d Block tiling
 
 ## Increasing Arithmetic Intensity via 2D Blocktiling
 ```
+in the last implementation the problem was that in a thread we load one column of the B once but still the A is loaded multiple time like
+A0 * B0
+A1 * B0
+A2 * B0
+A3 * B0
+A4 * B0
+A5 * B0
+A6 * B0
+A7 * B0
+
+this still calls the shread memory multiple time by this causing a slowness in the running of the kernel
+
+now in the 2d tiling one thread calculate 8x8(TM x TN) results.
+
+Lets visualize : 
+
+so if the tiles are like
+
+tile A : 1 2                                tile B : 5 6 
+         3 4                                         7 8
+
+then in 1D tiling the operation thread 0 will be            |           but in 2d tiling the operations will be 
+                                                            |
+        1×5 + 2×7                                           |                   1×5 + 2×7
+        3×5 + 4×7                                           |                   1×6 + 2×8
+                                                            |
+thread 1 will do                                            |                   3×5 + 4×7
+                                                            |                   3×6 + 4×8
+        1×6 + 2×8                                           |                   
+        3×6 + 4×8                                           |                   
+
+so the benefit is that in 1d two thread loads the same data [[1, 2],[3, 4]] in both the thread this take extra time as the shared memory is slow
+
+but in 2d tiling both of them loaded and a single thread perform everthing thus saving time as read and write operations are only done once.
 ```
+```
+outermost loop loops the tiles of the blocks and then .
+second loops are used to matrix multiple of these tiles.
+```
+
+## Vectorize SGEMM and GEMM access
+```
+now the next bottle neck that we have is the movment of data from global memory to shred memory
+
+suppose we have 
+1 2 3 4
+
+without vectorization every thread loads
+Thread 0 -> 1
+
+Thread 1 -> 2
+
+Thread 2 -> 3
+
+Thread 3 -> 4
+
+GPU executes 
+load float
+load float
+load float
+load float
+
+4 times same operation
+
+instead GPU support float4 which is litrally where 1, 2, 3, 4 are packed together 
+so now
+
+Thread 0
+
+↓
+
+load float4
+
+1 isntruction instead of 4
+
+so this reduces the instructions by 75% which provides the speed increase
+
+so now everywhere we just load it such that we have 4 item combined together 
+
+as if a = float4 then it will have
+a.x, a.y, a.z, a.w --> consist the memory adress of the 4 memory that are packed together.
+```
+
+## 
