@@ -6,4 +6,4 @@
 
 ## left in previous part:
 03 --> CUFFT, CURAND, CUTLASS
-04 --> kernel_resolve_bank_conflict, kernel_bank_extra_col, kernel_autotuned, kernel_wraptiling, kernel_double_buffring, Tensor_core, rolling_unrolling
+04 -->Tensor_core, rolling_unrolling
