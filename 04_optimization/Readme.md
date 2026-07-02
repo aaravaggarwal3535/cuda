@@ -1,5 +1,11 @@
 # Optimizing kernels:
 
+## Final results:
+Performed on a RTX 4060
+For Matrix size : M x K x N = 4096 x 4096 x 4096<br>
+![Logo Asset](./assets/image.png)
+
+
 ## naive kernel
 ```
 the most basic kernel that we write in the basic kernel section it is the slowest but we will try to optimize it.
@@ -227,4 +233,465 @@ as if a = float4 then it will have
 a.x, a.y, a.z, a.w --> consist the memory adress of the 4 memory that are packed together.
 ```
 
-## 
+## Bank Conflict Resolution using Swizzling (Linearization)
+
+```
+The main idea of swizzling (or linearization) is to deliberately rearrange
+how elements are stored in shared memory so that threads in the same warp
+access different memory banks simultaneously.
+
+Instead of storing the matrix in the normal row-major order, the elements
+are rearranged into a different layout. The values themselves do not change—
+only their locations in shared memory change.
+
+This spreads accesses across the 32 shared memory banks, reducing or
+completely eliminating bank conflicts and allowing all threads in a warp
+to read simultaneously.
+
+Normal shared memory layout:
+
+1  2  3  4
+5  6  7  8
+9 10 11 12
+13 14 15 16
+
+One possible swizzled (linearized) layout:
+
+1  5  9 13
+3  7 11 15
+2  6 10 14
+4  8 12 16
+
+(The exact layout depends on the swizzling algorithm used.)
+```
+
+**Note:**
+- Swizzling **does not move accesses farther apart in time**. All threads still access shared memory **at the same time**.
+- Instead, it changes the **memory addresses** so that simultaneous accesses go to **different shared memory banks**, allowing them to execute in parallel.
+- If the original kernel already has very few or no bank conflicts, swizzling can slightly reduce performance because of the extra index calculations and more complex memory layout.
+
+## Resolve bank conflict using padding
+```
+in mordern nvidia GPU Have 32 banks
+
+one bank can serve one adress per clock cycle
+
+suppose we have
+
+32 threads
+
+↓
+
+Shared Memory
+
+ideal case :
+
+Thread0 → Bank0
+
+Thread1 → Bank1
+
+Thread2 → Bank2
+
+...
+
+Thread31 → Bank31
+
+all happen simultaneously in 1 clock cycle
+
+but in case of bank conflict
+
+Thread0 → Bank5
+
+Thread1 → Bank5
+
+Thread2 → Bank5
+
+Thread3 → Bank5
+
+The hardware cannot serve them together thus a conflict occur
+
+this can only happen if provide more then 32 threads to a single shared memory as then there will be only 32 banks but more threads to process then conflict will arise.
+
+to solve this we add a padding means another layer 
+so adress become 
+0
+
+9
+
+18
+
+27
+
+36
+
+45
+
+instead of
+0
+
+8
+
+16
+
+24
+
+32
+now the modulo32pattern changes and the conflict can be resolved as now they dont fall in same bank as before.
+
+another technique is to change 
+As[row][col] to As[col][row]
+as this changes the memory banking thus solving the problem 
+
+this reducess shared memory serialization
+```
+***Note: this can cause a downfall in the GFLOPS if there was no bak conflict actually***
+
+## Autotuning
+```
+it is now a optimization rather we just test diffrent values for the same previously used kernel and see what is the best performing one is
+```
+
+## wraptiling
+```
+all the previous optimization was making the memory fast 
+but this is about making the computation fast
+
+instead of optimizing thread or blocks we use wraps(32 thread)
+
+the scheduler never schedule one thread alone instead it shedule 32 thread together
+
+before wrap was computing a random part of C but now lets give the wrap 64x64 or 128x128 of C
+
+now a wrap owns a entire rectangle
+
+Before:
+
+let say block compute 128x128 there thread were scatter and each of them computes 8x8 with not much cordination beyond shared memory
+
+now :
+
+we divide the block 
+128x128
+
++---------+---------+
+| Warp 0  | Warp 1  |
++---------+---------+
+| Warp 2  | Warp 3  |
++---------+---------+
+
+for wrap owns 64×64
+
+the thread still computes 8*8
+
+this is faster as if a wrap calculate 64x64 then the threads in side it will be using A vlues and B values multiple time 
+
+gpu executes wraps not threads, less shared memory traffic as
+
+before
+Shared Memory
+
+↓
+
+Registers
+
+↓
+
+Compute
+
+now
+Shared Memory
+
+↓
+
+Warp registers
+
+↓
+
+Many computations
+
+better arthematic intensity:
+Without warp tiling
+
+Load A
+
+↓
+
+32 FMAs
+
+With warp tiling
+
+Load A
+
+↓
+
+256 FMAs
+
+Better cache locality: entire wrap works on the same area
+
+now for this whole wrap calculation where all the thread of the wrap reads the same memory we store all the data in a shared memory which can be accessed by all the threads in a wrap
+
+before in 2D tiling :
+Each thread repeatedly does
+Shared Memory
+      ↓
+Registers
+      ↓
+64 multiplications
+After finishing those 64 multiplications,
+the registers are empty again
+Then the next iteration
+Shared Memory
+      ↓
+Registers
+      ↓
+64 multiplications
+Every thread performs this independently.
+
+this consumes a lot of time 
+
+in wraptiling instead of all threads working independently the wrap become a single worker
+
+so all the threads can compute through same shared memory
+
+Global Memory
+      │
+      ▼
+Shared Memory  (one copy per block)
+      │
+      ▼
+Each thread loads only the values it needs
+into its own registers
+      │
+      ▼
+Registers perform thousands of multiplications/additions
+
+in 2D tiling :
+Load registers
+
+↓
+
+Compute one 8×8 tile
+
+↓
+
+Need new register values
+
+in wrap tiling :
+Load registers
+
+↓
+
+Compute tile #1
+
+↓
+
+Still have register values
+
+↓
+
+Compute tile #2
+
+↓
+
+Still have register values
+
+↓
+
+Compute tile #3
+
+↓
+
+Only then load again
+
+
+Thread 0 loads
+
+regM = [A0...A7]
+regN = [B0...B7]
+
+But instead of using them for one small tile, those values contribute to multiple subtiles of the warp tile.
+
+Imagine the warp tile is divided like this
+
+64×64 Warp Tile
+
++---------+---------+
+| Tile 1  | Tile 2  |
++---------+---------+
+| Tile 3  | Tile 4  |
++---------+---------+
+
+The same registers help compute
+
+Tile 1
+Tile 2
+Tile 3
+Tile 4
+
+before loading new values.
+
+Even better visualization
+
+Suppose
+
+regM
+
+1
+2
+3
+4
+5
+6
+7
+8
+
+and
+
+regN
+
+10 20 30 40 50 60 70 80
+
+In 2D tiling
+
+you compute
+
+1×10
+1×20
+...
+8×80
+
+That's one 8×8 output tile.
+
+In warp tiling,
+
+those same values are also used while the warp moves over different warp subtile positions.
+
+So
+
+regM
+
+1
+2
+3
+4
+5
+6
+7
+8
+
+might be multiplied with
+
+B columns 0-7
+
+then later
+
+B columns 8-15
+
+without immediately reloading regM.
+
+Likewise regN can be reused while different rows are processed.
+```
+
+```
+wt::loadFromGmem():
+Load one BK tile of A and B from global memory → shared memory.
+
+wt::processFromSmem():
+Shared Memory
+        ↓
+Registers
+        ↓
+Matrix Multiply
+        ↓
+threadResults[]
+
+sgemmWarptiling(): controll everything
+for every BK tile
+
+      ↓
+
+loadFromGmem()
+
+      ↓
+
+__syncthreads()
+
+      ↓
+
+processFromSmem()
+
+      ↓
+
+advance pointers
+
+repeat
+
+finally:
+threadResults[]
+
+↓
+
+store into C
+```
+
+## double buffring 
+```
+before double buffring:
+Load tile from Global Memory
+        ↓
+Store into Shared Memory
+        ↓
+__syncthreads()
+
+        ↓
+Compute using Shared Memory
+
+        ↓
+__syncthreads()
+
+        ↓
+Load next tile
+
+the GPU does:
+LOAD
+STOP
+
+COMPUTE
+STOP
+
+LOAD
+STOP
+
+COMPUTE
+STOP
+
+so the idea is while we load tile 1 let the operations of the tile 0 start
+
+this overlapp of the process in called pipelling
+
+double buffer:
+Shared Memory
+
+Buffer A
++-------------+
+| Tile 0      |
++-------------+
+
+Buffer B
++-------------+
+| Tile 1      |
++-------------+
+
+
+Version 1 : Software double buffring
+256 threads
+
+0----------------127
+compute
+
+128-------------255
+load
+
+Version 2 : Hardware double buffring
+every thread does both jobs. loading and multiplication
+```
