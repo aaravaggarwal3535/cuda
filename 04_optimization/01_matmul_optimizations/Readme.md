@@ -19,7 +19,7 @@ in the naive kernel we fix a column of matrix B and then traverse through all th
 in this the orow remain the same and we instead traverse through the column bu this make it a bit faster as columns are laid out adjacent in memory and we dont need to skip through certain elements until we reach the next row thus making the operation s a bit faster.
 
 in naive kernel:
-the wrap with 32 thread with each thread finding one element of c
+the warp with 32 thread with each thread finding one element of c
 Thread0   row0 col0
 Thread1   row0 col1
 ...
@@ -32,7 +32,7 @@ Thread31  row1 col15
 
 so in this 16 thread read the same adress and 16 thread read another adress
 
-in this version we dont use threadId.y this means we dont divide wrap to calculate 2 rows instead we make a single wrap to calculate single row
+in this version we dont use threadId.y this means we dont divide warp to calculate 2 rows instead we make a single warp to calculate single row
 
 GPU combines into one memory transaction this is called Memory Coalescing.
 
@@ -351,18 +351,18 @@ this reducess shared memory serialization
 it is now a optimization rather we just test diffrent values for the same previously used kernel and see what is the best performing one is
 ```
 
-## wraptiling
+## warptiling
 ```
 all the previous optimization was making the memory fast 
 but this is about making the computation fast
 
-instead of optimizing thread or blocks we use wraps(32 thread)
+instead of optimizing thread or blocks we use warps(32 thread)
 
 the scheduler never schedule one thread alone instead it shedule 32 thread together
 
-before wrap was computing a random part of C but now lets give the wrap 64x64 or 128x128 of C
+before warp was computing a random part of C but now lets give the warp 64x64 or 128x128 of C
 
-now a wrap owns a entire rectangle
+now a warp owns a entire rectangle
 
 Before:
 
@@ -379,13 +379,13 @@ we divide the block
 | Warp 2  | Warp 3  |
 +---------+---------+
 
-for wrap owns 64×64
+for warp owns 64×64
 
 the thread still computes 8*8
 
-this is faster as if a wrap calculate 64x64 then the threads in side it will be using A vlues and B values multiple time 
+this is faster as if a warp calculate 64x64 then the threads in side it will be using A vlues and B values multiple time 
 
-gpu executes wraps not threads, less shared memory traffic as
+gpu executes warps not threads, less shared memory traffic as
 
 before
 Shared Memory
@@ -426,9 +426,9 @@ Load A
 
 256 FMAs
 
-Better cache locality: entire wrap works on the same area
+Better cache locality: entire warp works on the same area
 
-now for this whole wrap calculation where all the thread of the wrap reads the same memory we store all the data in a shared memory which can be accessed by all the threads in a wrap
+now for this whole warp calculation where all the thread of the warp reads the same memory we store all the data in a shared memory which can be accessed by all the threads in a warp
 
 before in 2D tiling :
 Each thread repeatedly does
@@ -449,7 +449,7 @@ Every thread performs this independently.
 
 this consumes a lot of time 
 
-in wraptiling instead of all threads working independently the wrap become a single worker
+in warptiling instead of all threads working independently the warp become a single worker
 
 so all the threads can compute through same shared memory
 
@@ -476,7 +476,7 @@ Compute one 8×8 tile
 
 Need new register values
 
-in wrap tiling :
+in warp tiling :
 Load registers
 
 ↓

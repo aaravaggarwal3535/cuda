@@ -2,7 +2,7 @@
 **There are three ways:**
 - WMMA API (high level, easiest)
 - mma.sync PTX assembly (low level, faster)
-- CUTLASS (production quality) (already in previous sections)
+- CUTLASS (production quality)
 
 ## WMMA
 In base CUDA cores we can perform 32 FMAs per instruction in a thread 
@@ -97,3 +97,42 @@ You cannot choose
 Everything is hidden.
 
 so using inline instructions remove all those restrictions.
+
+in this we write
+```bash
+asm volatile(
+"mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+"{%0,%1,%2,%3},"
+"{%4,%5,%6,%7},"
+"{%8,%9},"
+"{%10,%11,%12,%13};"
+:
+...
+);
+```
+instead of 
+```bash
+wmma::mma_sync(c,a,b,c);
+```
+
+so that we can takl directly to othe tensor cores
+fragments are slow as there are in c++ so compiler need to spend time in packing and unpacking fragments
+
+but with ptx we can directly talk to registers thus saves time 
+
+**what does the instruction mean :**
+- mma.sync.aligned : Execute Tensor Core MMA(Matrix Multiply Acumalate)
+- m16 : means output rows 16 A(16 x K)
+- n8 : means the output column B(K x 8)
+- k16 : reduction dimension C (M X N)
+- row.col : means A is row major and B is column major 
+- f32.f16.f16.f32 : Accumalator(float), A(half), B(half), output(float)
+- register : we manually own every register
+        <br>A register = a0, a1, a2, a3
+        <br>B register = b0, b1
+        <br>C register = c0, c1, c2, c3
+        <br>Tensor core instruction : a0 a1 a2 a3 x b0 b1 + c0 c1 c2 c3
+        <br>ldmatrix : this is used to rearange the data stored on the shared memory to that on the register of tensor core as the tensor core wants the data in a weird way so this rearange it automatically
+        <br>more instruction types : FP16, BF16, TF32, INT8, FP8
+
+We can also overlap cp.async, ldmatrix, mma.sync 
