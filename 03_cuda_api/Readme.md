@@ -54,3 +54,4 @@ If you’re trying to just figure out how to get the fastest possible inference 
 
 ## Resources:
 - [CUDA Library Samples](https://github.com/NVIDIA/CUDALibrarySamples)
+
