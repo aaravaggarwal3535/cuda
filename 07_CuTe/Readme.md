@@ -190,3 +190,137 @@ int main() {
 
 this make it resuable just cahnge the layout and now the same kernenlworks for diffrent size
 
+## Tensor slicing
+
+```cpp
+auto A = make_tensor(
+    ptr,
+    make_layout(make_shape(8,8))
+);
+```
+this created a matrix A completely and load it all at once
+
+### local tile : the most common slicing function
+
+```cpp
+auto tile =
+    local_tile(
+        A,
+        make_shape(Int<4>{},Int<4>{}),
+        make_coord(0,0)
+    );
+```
+
+This means split tensor A into 4x4 tiles 
+
+and tile(2,1) means row 2 and column 1 inside the tile
+
+to change the tile view without changing the tensor pointer just change the position in make_coord
+
+much cleaner version:
+```cpp
+auto blockTile =
+local_tile(
+A,
+make_shape(Int<128>{},Int<128>{}),
+make_coord(blockIdx.y,blockIdx.x)
+);
+```
+
+### local partition 
+
+this will instead of giving a tile to threadblock it give a tile to each thread
+
+```cpp
+auto threadTile =
+local_partition(
+blockTile,
+layout,
+threadIdx.x
+);
+```
+
+## copy atom
+
+it describe a particular copy operation
+
+### basic operation
+
+```cpp
+cute::copy(src, dst)
+```
+
+it is used to copy data from global tensor to shared tensor
+
+### basic example
+
+```cpp
+auto gA = make_tensor(
+    global_ptr,
+    global_layout
+);
+
+auto sA = make_tensor(
+    shared_ptr,
+    shared_layout
+);
+
+copy(gA, sA);
+```
+
+### proper example
+```cpp
+//creating global tensor
+auto gA =
+    make_tensor(
+        gmem_ptr,
+        make_layout(
+            make_shape(1024,1024)
+        )
+    );
+//creating tile
+auto gA_tile =
+    local_tile(
+        gA,
+        make_shape(
+            Int<128>{},
+            Int<128>{}
+        ),
+        make_coord(blockIdx.y, blockIdx.x)
+    );
+//creating shared memory tensor
+auto sA =
+    make_tensor(
+        smem_ptr,
+        make_layout(
+            make_shape(Int<128>{},Int<128>{})
+        )
+    );
+//copying
+copy(gA_tile, sA);
+```
+
+## MMA/Tensor core operation
+
+              GPU
+               │
+       ┌───────┴───────┐
+       │               │
+   Global Memory   Global Memory
+       │               │
+       │ copy          │ copy
+       ▼               ▼
+   Shared A         Shared B
+       │               │
+       │ copy          │ copy
+       ▼               ▼
+   Register A       Register B
+       │               │
+       └───────┬───────┘
+               │
+               ▼
+          Tensor Core
+               │
+               ▼
+          Accumulator
+
