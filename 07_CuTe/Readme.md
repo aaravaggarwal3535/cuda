@@ -324,3 +324,311 @@ copy(gA_tile, sA);
                ▼
           Accumulator
 
+### MMA Atom:
+
+once we have a mma atom which have a mma operations then you create tensor compatible with it.
+earlier copy means move data 
+mma means:
+```
+Global Memory
+      │
+      │ copy
+      ▼
+Shared Memory
+      │
+      │ copy
+      ▼
+Registers
+      │
+      │ MMA
+      ▼
+Accumulator
+
+single mma cant do it we need a tiled mma
+
+so the hirarchy become:
+
+Entire GEMM
+     │
+     ▼
+128 × 128 × 64 threadblock tiles
+     │
+     ▼
+64 × 64 × 64 warp tiles
+     │
+     ▼
+16 × 8 × 16 MMA instructions
+     │
+     ▼
+Tensor Core
+```
+```
+then GEMM architechture become:
+                 Global Memory
+                       │
+                       │
+                    copy()
+                       │
+                       ▼
+                Shared Memory
+                       │
+                       │
+                    copy()
+                       │
+                       ▼
+                   Registers
+                       │
+                       │
+                 TiledMMA
+                       │
+                       ▼
+                Tensor Cores
+                       │
+                       ▼
+                 Accumulators
+                       │
+                       ▼
+                  Epilogue
+                       │
+                       ▼
+                Global Memory
+```
+## implimenting tiled MMA
+
+let say our mma can do 16x8 but we need a 64x 64 then we have to use tiled MMA
+
+### threads
+CuTe decide which thread get which part of the data to work on 
+
+### describing a tiled mma
+
+```cpp
+auto tiled_mma = make_tiled_mma(mma_atom, ...);
+```
+
+represents:
+```
+MMA instruction
++
+thread arrangement
++
+data layout
++
+repetition
+```
+
+tiled_mma consist of :
+1. What MMA instruction?
+2. Which threads participate?
+3. Which A elements belong to each thread?
+4. Which B/C elements belong to each thread?
+
+### partitioning A
+let say we have a A = 128 x 64
+so we can conceptually partition A like 
+```
+128 × 64
+┌───────────────┐
+│ T0 │ T1 │ T2  │
+├────┼────┼─────┤
+│ T3 │ T4 │ T5  │
+├────┼────┼─────┤
+│... │... │...  │
+└───────────────┘
+```
+
+code wise:
+```cpp
+auto thread_mma = tiled_mma.get_slice(thread_idx);
+
+auto tAgA = thread_mma.partition_A(gA);
+```
+
+### partioning B
+
+```cpp
+auto tBgB = thread_mma.partition_B(gB);
+```
+
+### partitioning C
+
+```cpp
+auto tCgC = thread_mma.partition_C(gC);
+```
+
+the overall structure become 
+```
+              TiledMMA
+                  │
+         ┌────────┼────────┐
+         │        │        │
+         ▼        ▼        ▼
+     partition_A partition_B partition_C
+         │        │        │
+         ▼        ▼        ▼
+        Afrag    Bfrag    Cfrag
+```
+
+in CuTe instead of manually mapping which element map to which CuTe tells that mapping.
+
+### accumalator
+before the fragments are initialised by 0 
+after the mma accumalator do its job the fragments of the C now contain the correct value
+
+### actual mma operation
+
+```cpp
+cute::gemm(
+    tiled_mma,
+    tCrA,
+    tCrB,
+    tCrC
+);
+```
+
+```
+        A fragment
+             │
+             │
+             ▼
+          ┌─────┐
+          │ MMA │
+          └─────┘
+             ▲
+             │
+        B fragment
+             │
+             ▼
+        C accumulator
+```
+
+### current architechture:
+```
+                    CuTe
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+       Layout                 Tensor
+          │                     │
+          └──────────┬──────────┘
+                     │
+                   Tile
+                     │
+                 Partition
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+        Copy                   MMA
+          │                     │
+     Copy Atom              MMA Atom
+                                │
+                            TiledMMA
+                                │
+                         Thread fragments
+                                │
+                           gemm / MMA
+```
+
+### code:
+
+```cpp
+// global tensor declaration
+auto gA = make_tensor(
+    make_gmem_ptr(A),
+    make_layout(make_shape(M, K))
+);
+
+auto gB = make_tensor(
+    make_gmem_ptr(B),
+    make_layout(make_shape(K, N))
+);
+
+auto gC = make_tensor(
+    make_gmem_ptr(C),
+    make_layout(make_shape(M, N))
+);
+
+// block tiling
+auto gA_tile = local_tile(
+    gA,
+    tile_shape,
+    make_coord(blockIdx.x, ...)
+);
+
+auto gB_tile = local_tile(
+    gB,
+    tile_shape,
+    make_coord(...)
+);
+
+auto gC_tile = local_tile(
+    gC,
+    tile_shape,
+    make_coord(...)
+);
+
+//shared mem
+__shared__ half smem_A[...];
+__shared__ half smem_B[...];
+
+auto sA = make_tensor(
+    make_smem_ptr(smem_A),
+    shared_layout_A
+);
+
+auto sB = make_tensor(
+    make_smem_ptr(smem_B),
+    shared_layout_B
+);
+
+//cooperative copy
+copy(gA_tile, sA);
+copy(gB_tile, sB);
+
+//Tiled MMA
+auto thread_mma =
+    tiled_mma.get_slice(threadIdx.x);
+
+//partition A
+auto tCrA =
+    thread_mma.partition_A(sA);
+
+auto tCrB =
+    thread_mma.partition_B(sB);
+
+//create accumalator
+auto tCrC =
+    thread_mma.partition_C(sC);
+
+//perform mma
+gemm(
+    tiled_mma,
+    tCrA,
+    tCrB,
+    tCrC
+);
+
+//loop for k dimension
+for (int k_tile = 0;
+     k_tile < K;
+     ++k_tile)
+{
+    copy(A_global_tile, A_shared);
+    copy(B_global_tile, B_shared);
+
+    __syncthreads();
+
+    // MMA
+    gemm(
+        tiled_mma,
+        A_fragment,
+        B_fragment,
+        accumulator
+    );
+
+    __syncthreads();
+}
+
+//final write
+copy(tCrC, gC_tile);
+```
