@@ -77,3 +77,100 @@ Starting from the Volta architechture threads now contain independent program co
 - A read-only texture cache that is shared by all scalar processor cores and speeds up reads from the texture memory space, which is a read-only region of device memory; each multiprocessor accesses the texture cache via a texture unit that implements the various addressing modes and data filtering.
 
 # Syntax
+PTX programs are a collection of text source modules(files). It has a assembly like syntax. Pseudo-operation specify symbol and addressing management. ptax compiler optimizes and assemble PTX source modules to produce corresponding binary object files.
+
+## Source Format
+Lines are seprated by the new line chatachter \n. 
+all whitespace charachter are equivalent and ignored except for it use in seprating tokens in the language. 
+Lines beigning with # are preproccessing directives.
+PTX is case sensitive and uses lowercase for keywords.
+
+## Coments
+Comments in PTX follow C/C++ format. and are treated as whitespaces.
+
+## Statements
+PTX statement are either a directive or an instruction. begin with an optional lable and end with a semicolon.
+EX.
+```
+.reg .b32 r1, r2;
+.global .f32 array[N];
+```
+
+### Directive Statements
+Directive keyword begin with a dot. 
+![ptx directive](./assets/ptx_directive.png)
+
+### Instruction statement
+These are formed from a instruction opcode followed by a comma-seprated list of zero or more operands, and terminated by a semicolon. Operands can be register variable, constant expression, adress expression, or lable names. Instruction have an optional guard predicate which controls condition execution.
+
+A predicate is a register that hold true or false.
+.reg .pred p; --> creates a predicate register p.
+
+setp.lt.s32 p, %r1, %r2; --> this set the p true if the r1< r2 otherwise false
+
+@p add.s32 %r3, %r1, %r2; --> this runs the add operation based on if the value of p is true.
+
+![reserved instruction keyword](./assets/reserved_instruction_keyword.png)
+
+## Identifier
+User-defined identifiers follow extended C++ rules they either start with a letter followed by zero or more letter, digits, underscore or dollar charachter.
+```
+followsym: [a-zA-Z0-9_$]
+identifier: [a-zA-Z]{followsym}* | {[_$%]{followsym}+
+```
+
+There are some predefine identifiers.
+![predifine identifier](./assets/predifine_identifier.png)
+
+## Constants
+PTX supports integer and floating-point constants and constant expressions. These constants maybe used in data initialization and as operands to instructions.
+
+### Integer Constants
+Integer constants are 64-bits in size and are either signed or unsigned, i.e., every integer constant has type .s64 or .u64.
+Integer literals may be written in decimal, hexadecimal, octal, or binary notation. The syntax follows that of C.
+```
+hexadecimal literal: 0[xX]{hexdigit}+U?
+octal literal: 0{octal digit}+U?
+binary literal: 0[bB]{bit}+U?
+decimal literal {nonzero-digit}{digit}*U?
+```
+
+### Floating-Point Constants
+These are 64bit double precision value. The only 32-bit hex notation for single precision.
+```
+0[fF]{hexdigit}{8} ∕∕ single-precision floating point
+0[dD]{hexdigit}{16} ∕∕ double-precision floating point
+```
+
+### Predicate constants
+In PTX, integer constants may be used as predicates. For predicate-type data initializers and instruction operands, integer constants are interpreted as in C, i.e., zero values are False and non-zero values
+are True.
+
+### Constant expression
+Constant expression are formed using operators as in C.
+
+Constant expressions are formed from constant literals, unary plus and minus, basic arithmetic operators (addition, subtraction, multiplication, division), comparison operators, the conditional ternary
+operator ( ?: ), and parentheses. Integer constant expressions also allow unary logical negation (!), bitwise complement (~), remainder (%), shift operators (<< and >>), bit-type operators (&, |, and ^), and logical operators (&&, ||)
+
+Constant operation does not support cast between integer and floating point.
+
+![Operator Precednce](./assets/operator_precedence.png)
+
+### Integer Constant Expression Evaluation
+- Litrals are always signed unless explicit unsigned
+- Unary plus and minus preserve the type of the input operand
+- Unary logical negation (!) produces a signed result with value 0 or 1.
+- Unary bitwise complement (~) interprets the source operand as unsigned and produces an un-
+signed result.
+- Some binary operation require need normalization of source operands. This means converting both to unsigned type.
+- Addition, Subraction, Multiplication, and Division gice output same as the input.
+- Remainder (%) interprets the operands as unsigned
+- Left and right shift interpret the second operand as unsigned and produce a result with the same type as the first operand
+- AND (&), OR (|), and XOR (^) perform the usual arithmetic conversions and produce a result with the same type as the converted operands.
+- AND_OP (&&), OR_OP (||), Equal (==), and Not_Equal (!=) produce a signed result. The result value is 0 or 1.
+- Ordered comparisons (<, <=, >, >=) perform the usual arithmetic conversions on source operands and produce a signed result. The result value is 0 or 1
+- For the conditional operator ( ? : ) , the first operand must be an integer, and the second and third operands are either both integers or both floating-point.
+
+![Constant Expression Evaluation Rules](./assets/Constant_expression_evaluation_rules.png)
+
+# State Spaces, Types and Variable
