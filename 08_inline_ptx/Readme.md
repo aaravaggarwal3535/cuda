@@ -98,6 +98,7 @@ EX.
 
 ### Directive Statements
 Directive keyword begin with a dot. 
+
 ![ptx directive](./assets/ptx_directive.png)
 
 ### Instruction statement
