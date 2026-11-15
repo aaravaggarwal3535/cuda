@@ -458,3 +458,74 @@ The shared (.shared) state space is a memory that is owned by an executing CTA a
 ![Shared State Space](./assets/shared_state_space.png)
 
 ## Types
+### Fundamental Types
+This reffer to the native relative data type supported by the architechture.
+This specifies both a basic type and a size. 
+![Fundamental Type Specifier](./assets/fundamental_type_specifier.png)
+
+### Restricted use of sub word sizes
+The .u8, .s8, and .b8 instruction types are restricted to ld, st, add, sub, min, max, neg and cvt instructions. .f16 floating-point type is allowed in half precision floating point instruction. ld, st, cvt allow source and destination data operand to be wider than instruction type size, for ex 8,16 bit may be held in 32bit or 64 bit register when being loaded, stored, or converted to other types and sizes.
+
+### Alternate Floating-Point Data Formats
+The fundamental floating point types supported in PTX have implicit bit representation that indicate the number of bits used to store exponent and mantissa. for ex f16 indicate 5 bits for exponent and 10 bit for mantissa.
+(for a number 5367, 5.367 is mantisa and 3 is exponent as 5367 can be written as 5.367x10^3)
+
+- <b>bf16</b> : 16 bit floating point format with 8 bits exponent 7 bits mantissa, 1 bit for sign
+- <b>e4m3</b> : 8 bit floating point format with 4 bits exponent and 3 bit mentissa, 1 bit for sign
+- <b>e5m2</b> : 8 bit floating point with 5 bit exponent and 2 bit mantissa, 1 bit for sign
+- <b>tf32</b> : 32 bit floating point format with 8 bit exponant and 10 bit mantissa, 1 bit for sign
+- <b>e2m1</b> : 4 bit floating point format with 2 bit exponant and 1 bit mantissa, 1 bit for sign
+- <b>e2m3</b> : 6 bit floating point format with 2 bit exponent and 3 bit mantissa, 1 bit for sign
+- <b>e3m2</b> : 6 bit floating point format with 3 bit exponent and 2 bit mantissa, 1 bit for sign
+- <b>ue8m0</b> : 8 bit unsigned floating point format with 8 bit of exponant and 0 bit of mantissa.
+- <b>ue4m3</b> : 7 bit unsigned floating point format with 4 bit of exponant and 3 bit of mantissa
+
+### fixed point data format
+s2f6: 8 bit signed 2s complement integer with 2 sign bits and 6 fractional bits. 01.111111 = 127*2^(-6) = 1.984375
+
+### Packed Data Types
+Certain PTX instruction operate on two or more sets of input in parallel, and produce two or more sets of output. such instruction can use the data stored in a packed format, PTX support 2 or 4 variable to be packed into a single large value.
+
+#### Packed Floating Point Data Types
+only f16x2 can be supported as fundamental data type other can only act as instruction type.
+![Operand types for packed floating point instruction type](./assets/operand_types_for_packed_floating_point_instruction_type.png)
+
+#### Packed Integer Data Type
+PTX supports four variants of packed integer data types: .u16x2, .s16x2, .u8x4, and .s8x4. The. u16x2, .s16x2 packed data types consist of two .u16 or .s16 values. The .u8x4, .s8x4 packed data types consist of four .u8 or .s8 values. A register variable containing .u16x2, .s16x2, .u8x4, .s8x4 data must be declared with .b32 type. Packed integer data types cannot be used as fundamental types.
+
+#### Packed Fixed-Point Data Types
+PTX supports .s2f6x2 packed fixed-point data type consisting of two .s2f6 packed fixed-point values. A register variable containing .s2f6x2 value must be declared with .b16 type. Packed fixed-point data type cannot be used as fundamental type and is only supported as instruction type.
+xx.xxxxxxxxxxxx
+
+## Texture Sampler and Surface Types(Not Imp For AI)
+Texture, Sampler and Surface are used for Image processing 
+These are opaque, means cant directly see or manipulate their internal memory layout.
+### .texref
+Describe memory that will be accessed as a texture. 
+Texture have properties like Width, height, depth, Filtering mode, addressing mode, coordinate system.
+
+### .samplerred
+Control how a texture is read
+Decide how cordinate outside the texture are handled and wether interpolation is used, and wether cordinate are normalize
+
+### .surfref
+surfaces support operations including reading and writing through surface instructions.
+suld   → Surface load
+sust   → Surface store
+sured  → Surface reduction operation
+
+### What to do with opaque object
+Can declare them, initialize named properties
+
+### Channel data type
+![Opaque Type Fields in Unified Texture Mode](./assets/opaque_type_feild_in_unfied_texture_mode.png)
+![Opaque Type Fields in Independent Texture Mode](./assets/opaque_type_feild_in_independent_texture_mode.png)
+```
+.global .texref tex1;
+.global .samplerref tsamp1 = { addr_mode_0 = clamp_to_border,
+filter_mode = nearest
+};
+```
+![OpenCL 1.0](./assets/opencl.png)
+
+## Variables
