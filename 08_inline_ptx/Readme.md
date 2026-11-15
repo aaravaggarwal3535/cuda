@@ -368,7 +368,9 @@ setp.lt.s32 p, x, 4; --> check wether the x is less than 4
 It is a storage area, All variables reside in some state space. The charachterstic of a state space include its size, addressability, access speed, access right and level of sharing between threads.
 state space:
 ![State Space](./assets/state_space.png)
+
 properties of state space:
+
 ![Properties of State Spaces](./assets/properties_of_state_spaces.png)
 
 ### Register State Space
