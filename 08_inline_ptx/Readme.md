@@ -532,3 +532,124 @@ filter_mode = nearest
 ![OpenCL 1.0](./assets/opencl.png)
 
 ## Variables
+In PTX variable describe both its type and its state space. in addition to fundamental types, we hace array and vector also.
+
+### Variable Declaration
+All storage for the data is specified with the variable declaration. 
+It name in which the variable reside, its typen and size, its name, an optional array size, an optional initializer, and an optional fixed address for the variable
+
+```
+.global .u32 loc;
+.reg .s32 i;
+.const .f32 bias[] = {-1.0, 1.0};
+.global .u8 bg[4] = {0, 0, 0, 0};
+.reg .v4 .f32 accel;
+.reg .pred p, q, r; --> predicate can only be declared at register state space.
+```
+
+### Vectors
+Vector length of 2 or 4 with any type except predicate can be declared by, prefixing the type with .v2 or .v4, total size of the vector cant exceeds the 128 bit means a .v4 cant have f64. Three element vector can be handled by the .v4 where the 4th element act as a padding. 
+
+```
+.global .v4 .f32 V; ∕∕ a length-4 vector of floats
+.shared .v2 .u16 uv; ∕∕ a length-2 vector of unsigned ints
+.global .v4 .b8 v; ∕∕ a length-4 vector of byte
+```
+
+### Array Declaration
+They are used to allow the programmer to reserve space. 
+
+```
+.local .u16 kernel[19][19]; --> 19*19=361 element = 361*16 bit= 722 byte
+.shared .u8 mailbox[128];
+```
+
+### Initialixers
+Declare variable may specify an initial value.
+
+```
+.const .f32 vals[8] = { 0.33, 0.25, 0.125 };
+.global .s32 x[3][2] = { {1,2}, {3} };
+is equivalent to
+.const .f32 vals[8] = { 0.33, 0.25, 0.125, 0.0, 0.0, 0.0, 0.0, 0.0 };
+.global .s32 x[3][2] = { {1,2}, {3,0}, {0,0} };
+```
+
+currently variable initialization is supported only for constant and global state space. in constant and global state space if no initialization then it will be initialize by 0.
+
+PTX lets you create pointers at compile time and store them in global or constant memory. It also lets you extract individual bytes from an address using mask().
+
+```
+.const .u32 foo = 42;
+.global .u32 p1 = foo; --> p1 receive the address of foo
+```
+
+An address can be represented as an address within a particular state space, or as a generic address that can identify memory across applicable state spaces.
+
+```
+.global .u32 p1 = foo; --> address only in const state space
+.global .u32 p2 = generic(foo); --> genric address in all state space
+```
+
+To convert a genric address to a global memory address by
+```
+cvta.global.u64 %rd1, %rd2;
+```
+
+Getting genric address with a offset 
+```
+.global .u32 foo[] = { 2, 3, 5, 7, 9, 11 };
+.global .u64 ptr = generic(foo); ∕∕ generic address of foo[0]
+.global .u64 ptr = generic(foo)+8; ∕∕ generic address of foo[2]
+```
+
+Starting with PTX ISA 7.1, mask() allows you to extract a particular byte from an integer expression or address and use that byte as the initialized value.
+
+![mask](./assets/mask.png)
+
+```
+0xff(foo+4) --> first add 4 then extract the selescted bytes
+0xff(generic(foo)) --> first find the genric address than extract the selected bytes
+0xFF(1000 + 546) --> can work on direct numerical
+```
+
+Can Initialize by function address
+
+```
+.global .u64 function_table[] = {
+    functionA,
+    functionB
+};
+```
+
+### Alignment 
+Computer memory is made up of individual bytes, each with a numbered address (0, 1, 2, 3, 4...). Byte alignment means forcing a variable's starting address to be an exact multiple of a specific number (like 4, 8, or 16) should be only multiple of 2. If not specify it will align them automaticalt based on there side
+
+```
+∕∕ allocate array at 4-byte aligned address. Elements are bytes.
+.const .align 4 .b8 bar[8] = {0,0,0,0,2,0,0,0};
+```
+
+### Parameterized variable name
+Shorthand to declare hundreds or thousands of register at once
+
+```
+.reg .b32 %r<100>; ∕∕ declare %r0, %r1, ..., %r99
+```
+
+### Variable Attribute
+Variables may be declared with an optional .attribute directive which allows specifying special attributes of variables. Keyword .attribute is followed by attribute specification inside parenthesis. Multiple attributes are separated by comma.
+
+### Variable and Function Attribute Directive: .attribute
+- <b>.managed</b> : Variable will be allocated at a location in unified memory ennviorment where host and other device in the system can refrence the variable directly. The attribute can only be used with variables in .global state space.
+- <b>.unified</b>: .unified is a mechanism that gives the function the same address identity across the host and devices. This attribute
+can only be used on device functions or on variables in the .global state space. Variables with .unified attribute are read-only and must be loaded by specifying .unified qualifier on the address operand of ld instruction, otherwise the behavior is undefined.
+
+```
+.global .attribute(.managed) .s32 g;
+.global .attribute(.managed) .u64 x;
+.global .attribute(.unified(19,95)) .f32 f; --> .unified(uuid1, uuid2), 19 → upper 64-bit portion. 95 → lower 64-bit portion.
+.func .attribute(.unified(0xAB, 0xCD)) bar() { ... } --> device function can also have attribute
+```
+
+## Tensors
